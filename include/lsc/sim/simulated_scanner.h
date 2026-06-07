@@ -78,7 +78,8 @@ public:
     };
 
     // ---- 构造 ----
-    explicit SimulatedScanner(const Config& cfg = Config());
+    SimulatedScanner();
+    explicit SimulatedScanner(const Config& cfg);
 
     // ---- 获取配置与内参 ----
     const Config&         getConfig()     const { return cfg_; }

@@ -17,6 +17,11 @@ namespace sim {
 // 构造与初始化
 // ============================================================
 
+SimulatedScanner::SimulatedScanner()
+    : SimulatedScanner(Config{})
+{
+}
+
 SimulatedScanner::SimulatedScanner(const Config& cfg)
     : cfg_(cfg)
     , rng_(std::mt19937::default_seed)
