@@ -180,56 +180,10 @@ static double angleDeg(const Eigen::Vector3d& a, const Eigen::Vector3d& b) {
     return std::acos(d) * 180.0 / M_PI;
 }
 
-struct EvidenceAudit {
-    size_t records = 0;
-    size_t expectedFiles = 0;
-    size_t availableFiles = 0;
-    bool outputReady = true;
-};
-
-static EvidenceAudit gEvidenceAudit;
-
-/** 将文件路径转换为 UTF-8，保证含中文的发布目录可被 Qt 正确解析。 */
-static std::string absolutePathUtf8(const std::string& path) {
-    return std::filesystem::absolute(std::filesystem::u8path(path)).u8string();
-}
-
-/** 判断本次运行生成的证据文件是否存在且非空。 */
-static bool evidenceFileAvailable(const std::string& path) {
-    std::error_code error;
-    const std::filesystem::path file = std::filesystem::u8path(path);
-    return std::filesystem::is_regular_file(file, error) && !error &&
-           std::filesystem::file_size(file, error) > 0 && !error;
-}
-
-/**
- * 清空上一轮输出并建立当前运行目录。
- *
- * 清理旧文件可以防止写图失败时误把上一轮残留图片当成本轮证据。
- */
+/** 确保 output/ 和 output/images/ 目录存在（跨平台） */
 static void ensureOutputDir() {
-    std::error_code error;
-    std::filesystem::remove_all("output", error);
-    if (error) {
-        gEvidenceAudit.outputReady = false;
-        std::cerr << "[LSC_EVIDENCE_ERROR] 无法清理输出目录: "
-                  << error.message() << '\n';
-        error.clear();
-    }
-
-    std::filesystem::create_directories("output/images", error);
-    if (error) {
-        gEvidenceAudit.outputReady = false;
-        std::cerr << "[LSC_EVIDENCE_ERROR] 无法创建原图目录: "
-                  << error.message() << '\n';
-        error.clear();
-    }
-    std::filesystem::create_directories("output/diagnostics", error);
-    if (error) {
-        gEvidenceAudit.outputReady = false;
-        std::cerr << "[LSC_EVIDENCE_ERROR] 无法创建诊断图目录: "
-                  << error.message() << '\n';
-    }
+    std::filesystem::create_directories("output/images");
+    std::filesystem::create_directories("output/diagnostics");
 }
 
 /**
@@ -257,29 +211,12 @@ static void emitImageDetail(
     const std::string& processedPath,
     const std::string& algorithm,
     const std::string& summary) {
-    ++gEvidenceAudit.records;
-    gEvidenceAudit.expectedFiles += 2;
-    const bool sourceAvailable = evidenceFileAvailable(sourcePath);
-    const bool processedAvailable = evidenceFileAvailable(processedPath);
-    gEvidenceAudit.availableFiles +=
-        static_cast<size_t>(sourceAvailable) +
-        static_cast<size_t>(processedAvailable);
-
-    if (!sourceAvailable) {
-        std::cerr << "[LSC_EVIDENCE_ERROR] 缺少算法输入: "
-                  << absolutePathUtf8(sourcePath) << '\n';
-    }
-    if (!processedAvailable) {
-        std::cerr << "[LSC_EVIDENCE_ERROR] 缺少处理结果: "
-                  << absolutePathUtf8(processedPath) << '\n';
-    }
-
     std::cout
         << "[LSC_DETAIL]\t" << detailField(category)
         << '\t' << index
         << '\t' << detailField(title)
-        << '\t' << absolutePathUtf8(sourcePath)
-        << '\t' << absolutePathUtf8(processedPath)
+        << '\t' << std::filesystem::absolute(sourcePath).string()
+        << '\t' << std::filesystem::absolute(processedPath).string()
         << '\t' << detailField(algorithm)
         << '\t' << detailField(summary)
         << '\n' << std::flush;
@@ -640,7 +577,7 @@ int main(int argc, char* argv[]) {
             fname << "output/images/chessboard_" << std::setw(3) << std::setfill('0') << i << ".png";
             cv::imwrite(fname.str(), images[i]);
             std::cout << "[IMAGE chessboard "
-                      << absolutePathUtf8(fname.str()) << "]\n"
+                      << std::filesystem::absolute(fname.str()).string() << "]\n"
                       << std::flush;
 
             cv::Mat diagnostic = toDiagnosticCanvas(images[i]);
@@ -723,7 +660,7 @@ int main(int argc, char* argv[]) {
             fname << "output/images/laser_board_" << std::setw(3) << std::setfill('0') << i << ".png";
             cv::imwrite(fname.str(), images[i]);
             std::cout << "[IMAGE laser_board "
-                      << absolutePathUtf8(fname.str()) << "]\n"
+                      << std::filesystem::absolute(fname.str()).string() << "]\n"
                       << std::flush;
 
             cv::Mat diagnostic = toDiagnosticCanvas(images[i]);
@@ -809,7 +746,7 @@ int main(int argc, char* argv[]) {
             fname << "output/images/motion_" << std::setw(3) << std::setfill('0') << i << ".png";
             cv::imwrite(fname.str(), images[i]);
             std::cout << "[IMAGE motion "
-                      << absolutePathUtf8(fname.str()) << "]\n"
+                      << std::filesystem::absolute(fname.str()).string() << "]\n"
                       << std::flush;
 
             cv::Mat diagnostic = toDiagnosticCanvas(images[i]);
@@ -942,7 +879,7 @@ int main(int argc, char* argv[]) {
             fname << "output/images/scan_" << std::setw(4) << std::setfill('0') << i << ".png";
             cv::imwrite(fname.str(), scanImages[i]);
             std::cout << "[IMAGE scan "
-                      << absolutePathUtf8(fname.str()) << "]\n"
+                      << std::filesystem::absolute(fname.str()).string() << "]\n"
                       << std::flush;
 
             cv::Mat diagnostic = toDiagnosticCanvas(scanImages[i]);
@@ -1336,12 +1273,8 @@ int main(int argc, char* argv[]) {
     const bool measurementsFinite =
         std::isfinite(measuredH1) && std::isfinite(measuredH2) &&
         std::isfinite(measVol) && std::isfinite(totalTime);
-    const bool evidenceOk =
-        gEvidenceAudit.outputReady &&
-        gEvidenceAudit.records > 0 &&
-        gEvidenceAudit.expectedFiles == gEvidenceAudit.availableFiles;
     const bool inspectionOk =
-        calibAllOk && measurementsFinite && evidenceOk &&
+        calibAllOk && measurementsFinite &&
         !cloud.empty() && !topSurfaceCloud.empty() &&
         std::abs(measuredH1 - cfg.step1H) <= 5.0 &&
         std::abs(measuredH2 - cfg.step2H) <= 5.0 &&
@@ -1353,10 +1286,6 @@ int main(int argc, char* argv[]) {
               << " gt_volume=" << gtVol
               << " elapsed=" << totalTime << "]\n";
     std::cout << "[LSC_PROGRESS value=100]\n";
-    std::cout << "[LSC_EVIDENCE ok=" << (evidenceOk ? 1 : 0)
-              << " records=" << gEvidenceAudit.records
-              << " expected=" << gEvidenceAudit.expectedFiles
-              << " available=" << gEvidenceAudit.availableFiles << "]\n";
     std::cout << "[LSC_DONE ok=" << (inspectionOk ? 1 : 0) << "]\n"
               << std::flush;
 

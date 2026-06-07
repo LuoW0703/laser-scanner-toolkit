@@ -1,13 +1,5 @@
 # Changelog
 
-## 1.0.1 (2026-06-07)
-
-- Fixed evidence image loading when the application is installed under a path containing Chinese characters.
-- Added UTF-8 paths to the GUI subprocess protocol.
-- Added end-to-end evidence auditing for generated images and point clouds.
-- Changed inspection verdicts to fail when evidence records are missing, empty, or unreadable.
-- Cleared stale output before each run so previous files cannot produce a false pass.
-
 ## 1.0.0 (2026-06-06)
 
 - Initial public release.

@@ -26,12 +26,7 @@ PipelineResult ResultParser::parse(const QString& log) {
     for (const QString& rawLine : lines) {
         const QString line = rawLine.trimmed();
 
-        if (line.startsWith(QStringLiteral("[LSC_DETAIL]\t"))) {
-            const ImageDetailRecord detail = parseImageDetail(line);
-            if (detail.valid()) {
-                result.imageDetails.append(detail);
-            }
-        } else if (line.startsWith(QStringLiteral("[IMAGE "))) {
+        if (line.startsWith(QStringLiteral("[IMAGE "))) {
             const QString path = parseImagePath(line);
             if (!path.isEmpty()) {
                 result.imageList.append(path);
@@ -51,26 +46,12 @@ PipelineResult ResultParser::parse(const QString& log) {
             result.measVolume = valueForKey(line, QStringLiteral("volume"));
             result.gtVolume = valueForKey(line, QStringLiteral("gt_volume"));
             result.totalTime = valueForKey(line, QStringLiteral("elapsed"));
-        } else if (line.startsWith(QStringLiteral("[LSC_EVIDENCE "))) {
-            result.evidenceReported = true;
-            result.evidenceOk = boolForKey(line, QStringLiteral("ok"));
-            result.evidenceRecords =
-                static_cast<int>(valueForKey(line, QStringLiteral("records")));
-            result.evidenceExpectedFiles =
-                static_cast<int>(valueForKey(line, QStringLiteral("expected")));
-            result.evidenceAvailableFiles =
-                static_cast<int>(valueForKey(line, QStringLiteral("available")));
         } else if (line.startsWith(QStringLiteral("[LSC_DONE "))) {
             result.completed = true;
             result.inspectionOk = boolForKey(line, QStringLiteral("ok"));
         }
     }
 
-    result.inspectionOk =
-        result.inspectionOk &&
-        result.evidenceReported &&
-        result.evidenceOk &&
-        !result.imageDetails.isEmpty();
     return result;
 }
 

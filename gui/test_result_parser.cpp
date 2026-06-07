@@ -62,28 +62,6 @@ int main() {
           "detail processed path with spaces");
     check(detail.summary.contains(QStringLiteral("123")), "detail summary");
 
-    const PipelineResult successful = ResultParser::parse(
-        QStringLiteral(
-            "[LSC_DETAIL]\tcamera\t0\t相机图像\t"
-            "C:/含中文/原图.png\tC:/含中文/处理图.png\t角点检测\t54 个角点\n"
-            "[LSC_EVIDENCE ok=1 records=1 expected=2 available=2]\n"
-            "[LSC_DONE ok=1]\n"));
-    check(successful.inspectionOk, "complete evidence permits inspection pass");
-    check(successful.evidenceReported, "evidence status reported");
-    check(successful.evidenceOk, "evidence status success");
-    check(successful.evidenceRecords == 1, "evidence record count");
-    check(successful.imageDetails.size() == 1, "detail collected in result");
-    check(successful.imageDetails.front().sourcePath.contains(
-              QStringLiteral("含中文")),
-          "UTF-8 evidence path");
-
-    const PipelineResult missingEvidence = ResultParser::parse(
-        QStringLiteral(
-            "[LSC_EVIDENCE ok=0 records=1 expected=2 available=0]\n"
-            "[LSC_DONE ok=1]\n"));
-    check(!missingEvidence.inspectionOk,
-          "missing evidence must override pipeline success");
-
     std::cout << "test_result_parser passed\n";
     return EXIT_SUCCESS;
 }

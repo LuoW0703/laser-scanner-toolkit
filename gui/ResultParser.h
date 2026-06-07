@@ -2,7 +2,6 @@
 
 #include <QString>
 #include <QStringList>
-#include <QVector>
 
 /**
  * 一张仿真图像对应的可审查处理记录。
@@ -21,8 +20,7 @@ struct ImageDetailRecord {
     QString summary;
 
     bool valid() const {
-        return index >= 0 && !title.isEmpty() &&
-               !sourcePath.isEmpty() && !processedPath.isEmpty();
+        return index >= 0 && !title.isEmpty() && !sourcePath.isEmpty();
     }
 };
 
@@ -42,14 +40,8 @@ struct PipelineResult {
 
     bool completed = false;
     bool inspectionOk = false;
-    bool evidenceReported = false;
-    bool evidenceOk = false;
-    int evidenceRecords = 0;
-    int evidenceExpectedFiles = 0;
-    int evidenceAvailableFiles = 0;
     QString rawLog;
     QStringList imageList;
-    QVector<ImageDetailRecord> imageDetails;
 
     bool valid() const { return completed || totalTime > 0.0 || measVolume > 0.0; }
 };

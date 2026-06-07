@@ -51,8 +51,6 @@ private:
     void displayImageDetail(int index);
     void displayEvidence(EvidenceView* target, const QString& path,
                          const QString& emptyText);
-    QString resolveEvidencePath(const QString& path) const;
-    bool validateEvidenceFiles(QStringList& missingPaths) const;
 
     QTextEdit* m_logView;
     QTextEdit* m_resultView;
