@@ -11,6 +11,7 @@
 #include <QFileDialog>
 #include <QFileInfo>
 #include <QHBoxLayout>
+#include <QImageReader>
 #include <QMenu>
 #include <QMenuBar>
 #include <QMessageBox>
@@ -462,8 +463,11 @@ void MainWindow::onProcessFinished(int exitCode) {
     setRunning(false);
     parseResults(m_fullLog);
     const PipelineResult result = ResultParser::parse(m_fullLog);
+    QStringList missingEvidence;
+    const bool localEvidenceOk = validateEvidenceFiles(missingEvidence);
 
-    if (exitCode == 0 && result.completed && result.inspectionOk) {
+    if (exitCode == 0 && result.completed &&
+        result.inspectionOk && localEvidenceOk) {
         m_progress->setValue(100);
         m_progress->setFormat(QStringLiteral("点检通过"));
         m_statusText->setText(QStringLiteral("点检通过"));
@@ -473,6 +477,14 @@ void MainWindow::onProcessFinished(int exitCode) {
         m_statusText->setText(QStringLiteral("点检失败"));
         m_logView->append(
             QStringLiteral("\n[失败] 退出码 %1，请查看上方错误日志。").arg(exitCode));
+        if (!localEvidenceOk) {
+            m_logView->append(
+                QStringLiteral("[失败] 点检证据不完整，缺少或为空的文件数：%1")
+                    .arg(missingEvidence.size()));
+            for (const QString& path : missingEvidence.mid(0, 8)) {
+                m_logView->append(QStringLiteral("  - ") + path);
+            }
+        }
     }
 }
 
@@ -511,6 +523,8 @@ void MainWindow::parseResults(const QString& log) {
             QStringLiteral("<p style='color:#c00'>未收到完整点检结果，请检查日志。</p>"));
         return;
     }
+    QStringList missingEvidence;
+    const bool localEvidenceOk = validateEvidenceFiles(missingEvidence);
 
     const auto state = [](bool ok) {
         return ok
@@ -520,7 +534,14 @@ void MainWindow::parseResults(const QString& log) {
 
     QString html = QStringLiteral("<table style='width:100%;border-collapse:collapse'>");
     html += QStringLiteral("<tr><td><b>总体点检</b></td><td>%1</td></tr>")
-                .arg(state(result.inspectionOk));
+                .arg(state(result.inspectionOk && localEvidenceOk));
+    html += QStringLiteral(
+                "<tr><td>图像证据</td><td>%1，%2/%3 文件，%4 条记录</td></tr>")
+                .arg(state(result.evidenceReported &&
+                           result.evidenceOk && localEvidenceOk))
+                .arg(result.evidenceAvailableFiles)
+                .arg(result.evidenceExpectedFiles)
+                .arg(result.evidenceRecords);
     html += QStringLiteral("<tr><td>相机标定</td><td>%1，指标 %2</td></tr>")
                 .arg(state(result.cameraOk))
                 .arg(result.cameraRms, 0, 'f', 3);
@@ -575,7 +596,52 @@ void MainWindow::onDetailSelectionChanged(int row) {
 
 void MainWindow::displayEvidence(
     EvidenceView* target, const QString& path, const QString& emptyText) {
-    target->setContent(path, emptyText);
+    target->setContent(resolveEvidencePath(path), emptyText);
+}
+
+QString MainWindow::resolveEvidencePath(const QString& path) const {
+    if (path.isEmpty()) {
+        return {};
+    }
+
+    const QFileInfo info(path);
+    if (info.isAbsolute()) {
+        return QDir::cleanPath(info.absoluteFilePath());
+    }
+
+    const QDir pipelineDir(QFileInfo(m_demoPath).absolutePath());
+    return QDir::cleanPath(pipelineDir.absoluteFilePath(path));
+}
+
+bool MainWindow::validateEvidenceFiles(QStringList& missingPaths) const {
+    const PipelineResult result = ResultParser::parse(m_fullLog);
+    if (!result.evidenceReported || !result.evidenceOk ||
+        result.imageDetails.isEmpty()) {
+        missingPaths.append(QStringLiteral("流水线未提供完整图像证据统计"));
+        return false;
+    }
+
+    for (const ImageDetailRecord& detail : result.imageDetails) {
+        const QStringList paths = {
+            resolveEvidencePath(detail.sourcePath),
+            resolveEvidencePath(detail.processedPath)
+        };
+        for (const QString& path : paths) {
+            const QFileInfo file(path);
+            bool readable =
+                file.exists() && file.isFile() && file.size() > 0;
+            if (readable &&
+                file.suffix().compare(
+                    QStringLiteral("ply"), Qt::CaseInsensitive) != 0) {
+                QImageReader reader(path);
+                readable = reader.canRead();
+            }
+            if (!readable) {
+                missingPaths.append(path);
+            }
+        }
+    }
+    return missingPaths.isEmpty();
 }
 
 void MainWindow::displayImageDetail(int index) {
