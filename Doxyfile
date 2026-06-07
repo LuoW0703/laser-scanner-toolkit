@@ -1,0 +1,11 @@
+PROJECT_NAME           = "Laser Scanner Toolkit"
+PROJECT_NUMBER         = 1.0.0
+OUTPUT_DIRECTORY       = docs
+INPUT                  = include src demo validation tests README.md
+RECURSIVE              = YES
+GENERATE_HTML          = YES
+GENERATE_LATEX         = NO
+QUIET                  = YES
+WARN_AS_ERROR          = NO
+EXTRACT_ALL            = YES
+FULL_PATH_NAMES        = NO

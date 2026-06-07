@@ -1,0 +1,9 @@
+{
+  "name": "laser-scanner-toolkit",
+  "version": "1.0.0",
+  "description": "3D line-laser profiler calibration, simulation, reconstruction, and measurement toolkit.",
+  "dependencies": [
+    "eigen3",
+    "opencv4"
+  ]
+}

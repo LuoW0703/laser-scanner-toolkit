@@ -1,0 +1,51 @@
+# Build directories
+/build/
+/build_gui/
+/app/
+/LaserScannerToolkit.exe
+cmake-build-*/
+/build-*/
+out/
+
+# CMake generated files
+CMakeCache.txt
+CMakeFiles/
+cmake_install.cmake
+install_manifest.txt
+compile_commands.json
+
+# Binaries and libraries
+*.exe
+*.dll
+*.lib
+*.a
+*.so
+*.dylib
+*.pdb
+*.obj
+*.o
+
+# Generated outputs
+/output/
+/docs/html/
+/package/
+/coverage.info
+/*.zip
+*.ply
+*.xyz
+build_*.txt
+*_output.txt
+test_result.txt
+
+# IDE/editor files
+.vs/
+.vscode/
+.idea/
+*.user
+*.suo
+__pycache__/
+*.pyc
+
+# OS files
+Thumbs.db
+.DS_Store

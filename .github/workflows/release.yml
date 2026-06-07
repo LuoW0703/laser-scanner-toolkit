@@ -1,0 +1,43 @@
+name: Release
+
+on:
+  push:
+    tags:
+      - "v*"
+
+jobs:
+  package:
+    runs-on: windows-latest
+
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          submodules: recursive
+
+      - name: Install OpenCV
+        run: choco install opencv --no-progress -y
+
+      - name: Configure
+        shell: pwsh
+        run: |
+          $args = @("-S", ".", "-B", "build", "-DCMAKE_BUILD_TYPE=Release")
+          if (Test-Path "C:\tools\opencv\build") {
+            $args += "-DOpenCV_DIR=C:\tools\opencv\build"
+          }
+          cmake @args
+
+      - name: Build
+        run: cmake --build build --config Release
+
+      - name: Package
+        shell: pwsh
+        run: |
+          New-Item -ItemType Directory -Path package -Force | Out-Null
+          Copy-Item build\*.exe package\ -ErrorAction SilentlyContinue
+          Copy-Item README.md,LICENSE,CHANGELOG.md package\
+          Compress-Archive -Path package\* -DestinationPath laser-scanner-toolkit-windows.zip
+
+      - name: Upload release asset
+        uses: softprops/action-gh-release@v2
+        with:
+          files: laser-scanner-toolkit-windows.zip

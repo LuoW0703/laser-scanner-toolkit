@@ -1,0 +1,225 @@
+name: Build and Validate
+
+on:
+  push:
+  pull_request:
+
+jobs:
+  build:
+    name: ${{ matrix.os }}
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, windows-latest]
+
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          submodules: recursive
+
+      - name: Cache ccache
+        if: runner.os == 'Linux'
+        uses: actions/cache@v4
+        with:
+          path: ~/.ccache
+          key: ccache-${{ runner.os }}-${{ github.ref_name }}
+          restore-keys: |
+            ccache-${{ runner.os }}-
+
+      - name: Cache OpenCV on Windows
+        if: runner.os == 'Windows'
+        id: opencv-cache-win
+        uses: actions/cache@v4
+        with:
+          path: C:\tools\opencv
+          key: opencv-win-choco
+
+      - name: Install OpenCV on Ubuntu
+        if: runner.os == 'Linux'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y ccache libopencv-dev
+
+      - name: Install OpenCV on Windows
+        if: runner.os == 'Windows' && steps.opencv-cache-win.outputs.cache-hit != 'true'
+        shell: pwsh
+        run: choco install opencv --no-progress -y
+
+      - name: Configure
+        shell: pwsh
+        run: |
+          $args = @("-S", ".", "-B", "build", "-DCMAKE_BUILD_TYPE=Release", "-DLSC_BUILD_TESTS=ON", "-DLSC_BUILD_BENCHMARKS=ON", "-DLSC_REGISTER_VALIDATION_TESTS=ON", "-DLSC_WARNINGS_AS_ERRORS=ON")
+          if ($env:RUNNER_OS -eq "Linux") {
+            $args += "-DCMAKE_CXX_COMPILER_LAUNCHER=ccache"
+          }
+          if ($env:RUNNER_OS -eq "Windows" -and (Test-Path "C:\tools\opencv\build")) {
+            $args += "-DOpenCV_DIR=C:\tools\opencv\build"
+          }
+          cmake @args
+
+      - name: Build
+        run: cmake --build build --config Release
+
+      - name: Run tests
+        shell: pwsh
+        run: ctest --test-dir build -C Release --output-on-failure --timeout 300
+
+  sanitizer:
+    name: ubuntu-asan-ubsan
+    runs-on: ubuntu-latest
+
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          submodules: recursive
+
+      - name: Cache ccache
+        uses: actions/cache@v4
+        with:
+          path: ~/.ccache
+          key: ccache-sanitizer-${{ github.ref_name }}
+          restore-keys: |
+            ccache-sanitizer-
+            ccache-Linux-
+
+      - name: Install dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y ccache libopencv-dev
+
+      - name: Configure with sanitizers
+        run: |
+          cmake -S . -B build-sanitize \
+            -DCMAKE_BUILD_TYPE=Debug \
+            -DCMAKE_CXX_COMPILER_LAUNCHER=ccache \
+            -DLSC_BUILD_TESTS=ON \
+            -DLSC_REGISTER_VALIDATION_TESTS=ON \
+            -DLSC_ENABLE_ASAN=ON \
+            -DLSC_ENABLE_UBSAN=ON
+
+      - name: Build with sanitizers
+        run: cmake --build build-sanitize --config Debug
+
+      - name: Run sanitizer tests
+        run: ctest --test-dir build-sanitize --output-on-failure --timeout 300
+        env:
+          ASAN_OPTIONS: detect_leaks=1
+          UBSAN_OPTIONS: print_stacktrace=1
+
+  coverage:
+    name: ubuntu-coverage
+    runs-on: ubuntu-latest
+
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          submodules: recursive
+
+      - name: Install dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y lcov libopencv-dev
+
+      - name: Configure with coverage
+        run: |
+          cmake -S . -B build-coverage \
+            -DCMAKE_BUILD_TYPE=Debug \
+            -DLSC_BUILD_TESTS=ON \
+            -DLSC_REGISTER_VALIDATION_TESTS=ON \
+            -DLSC_ENABLE_COVERAGE=ON
+
+      - name: Build with coverage
+        run: cmake --build build-coverage
+
+      - name: Run coverage tests
+        run: ctest --test-dir build-coverage --output-on-failure --timeout 300
+
+      - name: Generate coverage report
+        run: |
+          lcov --capture --directory build-coverage --output-file coverage.info
+          lcov --remove coverage.info '/usr/*' '*/third_party/*' '*/tests/*' --output-file coverage.info
+          lcov --list coverage.info
+
+      - name: Upload coverage artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: coverage-info
+          path: coverage.info
+
+  static-analysis:
+    name: ubuntu-clang-tidy
+    runs-on: ubuntu-latest
+
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          submodules: recursive
+
+      - name: Install dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y clang-tidy libopencv-dev
+
+      - name: Configure compile commands
+        run: |
+          cmake -S . -B build-tidy \
+            -DCMAKE_BUILD_TYPE=Debug \
+            -DCMAKE_EXPORT_COMPILE_COMMANDS=ON \
+            -DLSC_BUILD_DEMOS=OFF \
+            -DLSC_BUILD_VALIDATION=OFF \
+            -DLSC_BUILD_TESTS=OFF
+
+      - name: Run clang-tidy
+        run: run-clang-tidy -p build-tidy -j 2 src include
+
+  fuzz-smoke:
+    name: ubuntu-fuzz-smoke
+    runs-on: ubuntu-latest
+
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          submodules: recursive
+
+      - name: Install dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y clang libopencv-dev
+
+      - name: Configure fuzz target
+        run: |
+          CC=clang CXX=clang++ cmake -S . -B build-fuzz \
+            -DCMAKE_BUILD_TYPE=Debug \
+            -DLSC_BUILD_DEMOS=OFF \
+            -DLSC_BUILD_VALIDATION=OFF \
+            -DLSC_BUILD_FUZZERS=ON
+
+      - name: Build fuzz target
+        run: cmake --build build-fuzz --target fuzz_ply
+
+      - name: Run fuzz smoke
+        run: ./build-fuzz/fuzz_ply -max_total_time=30 -runs=1000
+
+  docs:
+    name: ubuntu-docs
+    runs-on: ubuntu-latest
+
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          submodules: recursive
+
+      - name: Install Doxygen
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y doxygen graphviz
+
+      - name: Generate API docs
+        run: doxygen Doxyfile
+
+      - name: Upload docs artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: doxygen-html
+          path: docs/html
