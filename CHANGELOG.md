@@ -1,5 +1,18 @@
 # Changelog
 
+## 1.0.2 (2026-06-07)
+
+- Added strict one-to-one validation between the inspection plan, image
+  details, evidence files, processing stages, and final measurement result.
+- Added structured scan-plan and measurement-trace protocol records.
+- Corrected the measurement evidence input to the raw reconstructed point
+  cloud actually used by the algorithm.
+- Rejected duplicate, missing, reordered, mismatched, stale, external, or
+  unreadable evidence records even when the subprocess declares success.
+- Added full ASCII PLY validation and source point-count verification.
+- Added negative tests for forged counts, broken processing links, missing
+  statuses, false measurement sources, and inconsistent final values.
+
 ## 1.0.1 (2026-06-07)
 
 - Fixed evidence image loading when the application is installed under a path containing Chinese characters.

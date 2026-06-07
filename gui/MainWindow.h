@@ -2,6 +2,7 @@
 
 #include "ResultParser.h"
 
+#include <QDateTime>
 #include <QDoubleSpinBox>
 #include <QGroupBox>
 #include <QLabel>
@@ -42,7 +43,7 @@ private:
     void setupImagePanel();
     void setupStatusBar();
 
-    void parseResults(const QString& log);
+    void parseResults(const QString& log, int exitCode);
     QString writeConfigFile();
     void setRunning(bool running);
 
@@ -52,7 +53,9 @@ private:
     void displayEvidence(EvidenceView* target, const QString& path,
                          const QString& emptyText);
     QString resolveEvidencePath(const QString& path) const;
-    bool validateEvidenceFiles(QStringList& missingPaths) const;
+    bool validateEvidenceFiles(QStringList& errors) const;
+    bool validateMeasurementResult(
+        const PipelineResult& result, QStringList& errors) const;
 
     QTextEdit* m_logView;
     QTextEdit* m_resultView;
@@ -83,6 +86,7 @@ private:
     PipelineRunner* m_runner;
     QString m_demoPath;
     QString m_fullLog;
+    QDateTime m_runStartedAt;
 
     QLabel* m_imageTitle;
     QListWidget* m_detailList;

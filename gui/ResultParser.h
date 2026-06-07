@@ -21,37 +21,64 @@ struct ImageDetailRecord {
     QString summary;
 
     bool valid() const {
-        return index >= 0 && !title.isEmpty() &&
-               !sourcePath.isEmpty() && !processedPath.isEmpty();
+        return !category.isEmpty() && index >= 0 && !title.isEmpty() &&
+               !sourcePath.isEmpty() && !processedPath.isEmpty() &&
+               sourcePath != processedPath && !algorithm.isEmpty() &&
+               !summary.isEmpty();
     }
 };
 
 struct PipelineResult {
+    bool planReported = false;
+    int plannedCameraRecords = 0;
+    int plannedLightPlaneRecords = 0;
+    int plannedMotionAxisRecords = 0;
+    int plannedScanFrames = 0;
+    int plannedScanEvidenceRecords = 0;
+    int plannedScanStride = 0;
+
+    bool cameraReported = false;
     bool cameraOk = false;
     double cameraRms = 0.0;
+    bool planeReported = false;
     bool planeOk = false;
     double planeAngle = 0.0;
+    bool axisReported = false;
     bool axisOk = false;
     double axisAngle = 0.0;
 
+    bool measurementsReported = false;
     double step1Height = 0.0;
     double step2Height = 0.0;
     double measVolume = 0.0;
     double gtVolume = 0.0;
     double totalTime = 0.0;
 
+    bool measurementTraceReported = false;
+    QString measurementSourcePath;
+    qint64 measurementSourcePoints = 0;
+    qint64 measurementTopPoints = 0;
+    double tracedStep1Height = 0.0;
+    double tracedStep2Height = 0.0;
+    double tracedVolume = 0.0;
+
     bool completed = false;
+    bool declaredInspectionOk = false;
     bool inspectionOk = false;
     bool evidenceReported = false;
     bool evidenceOk = false;
+    bool protocolOk = false;
     int evidenceRecords = 0;
     int evidenceExpectedFiles = 0;
     int evidenceAvailableFiles = 0;
     QString rawLog;
     QStringList imageList;
+    QStringList integrityErrors;
     QVector<ImageDetailRecord> imageDetails;
 
-    bool valid() const { return completed || totalTime > 0.0 || measVolume > 0.0; }
+    bool valid() const {
+        return completed || measurementsReported || !imageDetails.isEmpty();
+    }
 };
 
 class ResultParser {

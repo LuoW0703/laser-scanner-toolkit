@@ -28,6 +28,7 @@
 #include <chrono>
 #include <cmath>
 #include <stdexcept>
+#include <set>
 #include <vector>
 #include <string>
 #include <limits>
@@ -75,6 +76,7 @@ struct PipelineConfig {
 constexpr double kMaxCameraFocalErrorPercent = 5.0;
 constexpr double kMaxLightPlaneAngleDeg = 5.0;
 constexpr double kMaxMotionAxisAngleDeg = 1.0;
+constexpr size_t kScanEvidenceStride = 20;
 
 static bool validateConfig(const PipelineConfig& cfg, std::vector<std::string>& errors) {
     if (cfg.numCameraImages < 3) errors.push_back("num_camera_images must be >= 3");
@@ -185,6 +187,9 @@ struct EvidenceAudit {
     size_t expectedFiles = 0;
     size_t availableFiles = 0;
     bool outputReady = true;
+    bool recordsConsistent = true;
+    std::set<std::string> recordKeys;
+    std::set<std::string> evidencePairs;
 };
 
 static EvidenceAudit gEvidenceAudit;
@@ -259,6 +264,26 @@ static void emitImageDetail(
     const std::string& summary) {
     ++gEvidenceAudit.records;
     gEvidenceAudit.expectedFiles += 2;
+    const std::string absoluteSource = absolutePathUtf8(sourcePath);
+    const std::string absoluteProcessed = absolutePathUtf8(processedPath);
+    const std::string recordKey =
+        category + ":" + std::to_string(index);
+    const std::string evidencePair =
+        absoluteSource + "\n" + absoluteProcessed;
+
+    const bool metadataValid =
+        !category.empty() && !title.empty() && !algorithm.empty() &&
+        !summary.empty() && absoluteSource != absoluteProcessed;
+    const bool uniqueRecord =
+        gEvidenceAudit.recordKeys.insert(recordKey).second;
+    const bool uniquePair =
+        gEvidenceAudit.evidencePairs.insert(evidencePair).second;
+    if (!metadataValid || !uniqueRecord || !uniquePair) {
+        gEvidenceAudit.recordsConsistent = false;
+        std::cerr << "[LSC_EVIDENCE_ERROR] 证据记录不唯一或字段不完整: "
+                  << recordKey << '\n';
+    }
+
     const bool sourceAvailable = evidenceFileAvailable(sourcePath);
     const bool processedAvailable = evidenceFileAvailable(processedPath);
     gEvidenceAudit.availableFiles +=
@@ -278,8 +303,8 @@ static void emitImageDetail(
         << "[LSC_DETAIL]\t" << detailField(category)
         << '\t' << index
         << '\t' << detailField(title)
-        << '\t' << absolutePathUtf8(sourcePath)
-        << '\t' << absolutePathUtf8(processedPath)
+        << '\t' << absoluteSource
+        << '\t' << absoluteProcessed
         << '\t' << detailField(algorithm)
         << '\t' << detailField(summary)
         << '\n' << std::flush;
@@ -611,6 +636,18 @@ int main(int argc, char* argv[]) {
     // 公式: ΔX/ΔZ = 2.0，保证在 cfg.blockWidth/3=20mm 的台阶间隔内激光线能区分各表面
     simCfg.lightPlane = {0.4472, 0.0, 0.8944, -259.376};
     lsc::sim::SimulatedScanner scanner(simCfg);
+    const int plannedScanFrames =
+        static_cast<int>(simCfg.travelRange / simCfg.defaultStep) + 1;
+    const int plannedScanEvidence =
+        (plannedScanFrames + static_cast<int>(kScanEvidenceStride) - 1) /
+        static_cast<int>(kScanEvidenceStride);
+    std::cout << "[LSC_PLAN camera=" << cfg.numCameraImages
+              << " light_plane=" << cfg.numLpImages
+              << " motion_axis=" << cfg.numMaSteps
+              << " scan_frames=" << plannedScanFrames
+              << " scan_evidence=" << plannedScanEvidence
+              << " scan_stride=" << kScanEvidenceStride << "]\n"
+              << std::flush;
 
     // 获取 GT 参数作为参考
     const lsc::CameraIntrinsics& K_gt  = scanner.getIntrinsics();
@@ -911,7 +948,7 @@ int main(int argc, char* argv[]) {
     block.depth       = cfg.blockDepth;
     block.stepHeights = {0.0, cfg.step1H, cfg.step2H};  // 含基准面：0 高度平坦面 + 2 级台阶
 
-    int numScanLines = static_cast<int>(simCfg.travelRange / simCfg.defaultStep) + 1;
+    const int numScanLines = plannedScanFrames;
     std::cout << "  扫描对象: 阶梯块 (" << cfg.blockWidth << "x" << cfg.blockDepth
               << "mm, 台阶 " << cfg.step1H << "/" << cfg.step2H << "mm)\n";
     std::cout << "  扫描线数: " << numScanLines << " (步长 " << simCfg.defaultStep
@@ -936,8 +973,9 @@ int main(int argc, char* argv[]) {
         auto pts = extractor.extract(scanImages[i],
                                      lsc::LaserMethod::GRAY_CENTROID, 220.0, 1.5);
 
-        // 每 20 帧保存一张扫描图像并输出 [IMAGE] 标记，供 GUI 实时显示
-        if (i % 20 == 0) {
+        // 按固定步长保存扫描证据；计划标记会声明总帧数、抽样数和步长，
+        // GUI 据此确认没有漏记或伪造抽样帧。
+        if (i % kScanEvidenceStride == 0) {
             std::ostringstream fname;
             fname << "output/images/scan_" << std::setw(4) << std::setfill('0') << i << ".png";
             cv::imwrite(fname.str(), scanImages[i]);
@@ -1318,12 +1356,19 @@ int main(int argc, char* argv[]) {
                 << measuredDepth << " mm；顶面点 " << topSurfaceCloud.size();
         emitImageDetail(
             "measurement", 0, "高度与体积测量",
-            segmentedCloudPath, measurementCloudPath,
+            rawCloudPath, measurementCloudPath,
             measurementZonesValid
                 ? "X 方向三区域稳健 Z 统计 → 高度差；实测 X/Y 投影面积 × 区域高度 → 体积"
                 : "点云区域无效，未执行高度统计",
             summary.str());
     }
+    std::cout << "[LSC_MEASUREMENT]\t" << absolutePathUtf8(rawCloudPath)
+              << '\t' << cloud.size()
+              << '\t' << topSurfaceCloud.size()
+              << '\t' << measuredH1
+              << '\t' << measuredH2
+              << '\t' << measVol << '\n'
+              << std::flush;
 
     std::cout << "\n  Phase 4 完成\n\n";
 
@@ -1338,6 +1383,7 @@ int main(int argc, char* argv[]) {
         std::isfinite(measVol) && std::isfinite(totalTime);
     const bool evidenceOk =
         gEvidenceAudit.outputReady &&
+        gEvidenceAudit.recordsConsistent &&
         gEvidenceAudit.records > 0 &&
         gEvidenceAudit.expectedFiles == gEvidenceAudit.availableFiles;
     const bool inspectionOk =

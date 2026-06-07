@@ -6,12 +6,14 @@
 
 #include <QAction>
 #include <QApplication>
+#include <QDateTime>
 #include <QDir>
 #include <QFile>
 #include <QFileDialog>
 #include <QFileInfo>
 #include <QHBoxLayout>
 #include <QImageReader>
+#include <QHash>
 #include <QMenu>
 #include <QMenuBar>
 #include <QMessageBox>
@@ -22,7 +24,116 @@
 #include <QToolButton>
 #include <QVBoxLayout>
 
+#include <algorithm>
+#include <cmath>
 #include <functional>
+
+namespace {
+
+bool pathIsInside(const QString& path, const QString& directory) {
+    QString normalizedPath = QDir::fromNativeSeparators(
+        QDir::cleanPath(path));
+    QString normalizedDirectory = QDir::fromNativeSeparators(
+        QDir::cleanPath(directory));
+#ifdef Q_OS_WIN
+    normalizedPath = normalizedPath.toLower();
+    normalizedDirectory = normalizedDirectory.toLower();
+#endif
+    return normalizedPath == normalizedDirectory ||
+           normalizedPath.startsWith(normalizedDirectory + QLatin1Char('/'));
+}
+
+/**
+ * Validate the complete ASCII PLY payload, not only its filename or size.
+ *
+ * The point-cloud viewer performs the same semantic checks while loading.
+ * Repeating the lightweight validation here keeps the inspection verdict
+ * independent from whether the user has opened a particular evidence item.
+ */
+bool validateAsciiPlyFile(
+    const QString& path, QString& error, qint64& validatedVertexCount) {
+    validatedVertexCount = 0;
+    QFile file(path);
+    if (!file.open(QIODevice::ReadOnly | QIODevice::Text)) {
+        error = QStringLiteral("无法打开 PLY 文件");
+        return false;
+    }
+
+    QTextStream stream(&file);
+    if (stream.readLine().trimmed() != QStringLiteral("ply")) {
+        error = QStringLiteral("PLY 文件头无效");
+        return false;
+    }
+
+    bool ascii = false;
+    bool inVertexElement = false;
+    bool headerEnded = false;
+    qint64 vertexCount = 0;
+    QStringList properties;
+    while (!stream.atEnd()) {
+        const QString line = stream.readLine().trimmed();
+        if (line == QStringLiteral("end_header")) {
+            headerEnded = true;
+            break;
+        }
+        const QStringList parts = line.split(' ', Qt::SkipEmptyParts);
+        if (parts.size() >= 2 && parts[0] == QStringLiteral("format")) {
+            ascii = parts[1] == QStringLiteral("ascii");
+        } else if (parts.size() >= 3 &&
+                   parts[0] == QStringLiteral("element")) {
+            inVertexElement = parts[1] == QStringLiteral("vertex");
+            if (inVertexElement) {
+                bool ok = false;
+                vertexCount = parts[2].toLongLong(&ok);
+                if (!ok || vertexCount <= 0) {
+                    error = QStringLiteral("PLY 顶点数量无效");
+                    return false;
+                }
+                properties.clear();
+            }
+        } else if (parts.size() >= 3 && inVertexElement &&
+                   parts[0] == QStringLiteral("property")) {
+            properties.append(parts.last());
+        }
+    }
+
+    const int xIndex = properties.indexOf(QStringLiteral("x"));
+    const int yIndex = properties.indexOf(QStringLiteral("y"));
+    const int zIndex = properties.indexOf(QStringLiteral("z"));
+    if (!headerEnded || !ascii ||
+        xIndex < 0 || yIndex < 0 || zIndex < 0) {
+        error = QStringLiteral("PLY 必须是含 x/y/z 的完整 ASCII 点云");
+        return false;
+    }
+
+    for (qint64 index = 0; index < vertexCount; ++index) {
+        if (stream.atEnd()) {
+            error = QStringLiteral("PLY 顶点数据少于文件头声明");
+            return false;
+        }
+        const QStringList values =
+            stream.readLine().split(' ', Qt::SkipEmptyParts);
+        if (values.size() < properties.size()) {
+            error = QStringLiteral("PLY 顶点字段不完整");
+            return false;
+        }
+        bool xOk = false;
+        bool yOk = false;
+        bool zOk = false;
+        const double x = values[xIndex].toDouble(&xOk);
+        const double y = values[yIndex].toDouble(&yOk);
+        const double z = values[zIndex].toDouble(&zOk);
+        if (!xOk || !yOk || !zOk ||
+            !std::isfinite(x) || !std::isfinite(y) || !std::isfinite(z)) {
+            error = QStringLiteral("PLY 包含无效三维坐标");
+            return false;
+        }
+    }
+    validatedVertexCount = vertexCount;
+    return true;
+}
+
+} // namespace
 
 MainWindow::MainWindow(QWidget* parent)
     : QMainWindow(parent)
@@ -409,6 +520,7 @@ void MainWindow::onRunClicked() {
     }
 
     setRunning(true);
+    m_runStartedAt = QDateTime::currentDateTimeUtc();
     m_progress->setValue(0);
     m_progress->setFormat(QStringLiteral("启动点检..."));
     m_logView->append(QStringLiteral("[启动] ") + m_demoPath + QStringLiteral("\n"));
@@ -461,13 +573,31 @@ void MainWindow::onProcessOutput(const QString& text) {
 
 void MainWindow::onProcessFinished(int exitCode) {
     setRunning(false);
-    parseResults(m_fullLog);
+    parseResults(m_fullLog, exitCode);
     const PipelineResult result = ResultParser::parse(m_fullLog);
-    QStringList missingEvidence;
-    const bool localEvidenceOk = validateEvidenceFiles(missingEvidence);
+    QStringList failures = result.integrityErrors;
+    const bool measurementOk =
+        validateMeasurementResult(result, failures);
+    const bool localEvidenceOk = validateEvidenceFiles(failures);
+    if (!result.declaredInspectionOk) {
+        failures.append(QStringLiteral("流水线最终判定为失败"));
+    }
+    if (result.cameraReported && !result.cameraOk) {
+        failures.append(QStringLiteral("相机标定未通过"));
+    }
+    if (result.planeReported && !result.planeOk) {
+        failures.append(QStringLiteral("光平面标定未通过"));
+    }
+    if (result.axisReported && !result.axisOk) {
+        failures.append(QStringLiteral("移动轴标定未通过"));
+    }
+    if (exitCode != 0) {
+        failures.append(
+            QStringLiteral("点检程序退出码不是 0：%1").arg(exitCode));
+    }
 
     if (exitCode == 0 && result.completed &&
-        result.inspectionOk && localEvidenceOk) {
+        result.inspectionOk && measurementOk && localEvidenceOk) {
         m_progress->setValue(100);
         m_progress->setFormat(QStringLiteral("点检通过"));
         m_statusText->setText(QStringLiteral("点检通过"));
@@ -476,14 +606,12 @@ void MainWindow::onProcessFinished(int exitCode) {
         m_progress->setFormat(QStringLiteral("点检失败"));
         m_statusText->setText(QStringLiteral("点检失败"));
         m_logView->append(
-            QStringLiteral("\n[失败] 退出码 %1，请查看上方错误日志。").arg(exitCode));
-        if (!localEvidenceOk) {
-            m_logView->append(
-                QStringLiteral("[失败] 点检证据不完整，缺少或为空的文件数：%1")
-                    .arg(missingEvidence.size()));
-            for (const QString& path : missingEvidence.mid(0, 8)) {
-                m_logView->append(QStringLiteral("  - ") + path);
-            }
+            QStringLiteral("\n[失败] 点检结论未通过独立一致性校验。"));
+        if (failures.isEmpty()) {
+            failures.append(QStringLiteral("点检结果未满足全部通过条件"));
+        }
+        for (const QString& failure : failures.mid(0, 16)) {
+            m_logView->append(QStringLiteral("  - ") + failure);
         }
     }
 }
@@ -516,15 +644,21 @@ QString MainWindow::writeConfigFile() {
     return path;
 }
 
-void MainWindow::parseResults(const QString& log) {
+void MainWindow::parseResults(const QString& log, int exitCode) {
     const PipelineResult result = ResultParser::parse(log);
     if (!result.valid()) {
         m_resultView->setHtml(
             QStringLiteral("<p style='color:#c00'>未收到完整点检结果，请检查日志。</p>"));
         return;
     }
-    QStringList missingEvidence;
-    const bool localEvidenceOk = validateEvidenceFiles(missingEvidence);
+    QStringList verificationErrors;
+    const bool measurementOk =
+        validateMeasurementResult(result, verificationErrors);
+    const bool localEvidenceOk =
+        validateEvidenceFiles(verificationErrors);
+    const bool verifiedOk =
+        exitCode == 0 && result.inspectionOk &&
+        measurementOk && localEvidenceOk;
 
     const auto state = [](bool ok) {
         return ok
@@ -534,10 +668,13 @@ void MainWindow::parseResults(const QString& log) {
 
     QString html = QStringLiteral("<table style='width:100%;border-collapse:collapse'>");
     html += QStringLiteral("<tr><td><b>总体点检</b></td><td>%1</td></tr>")
-                .arg(state(result.inspectionOk && localEvidenceOk));
+                .arg(state(verifiedOk));
+    html += QStringLiteral("<tr><td>过程一致性</td><td>%1</td></tr>")
+                .arg(state(result.protocolOk));
     html += QStringLiteral(
                 "<tr><td>图像证据</td><td>%1，%2/%3 文件，%4 条记录</td></tr>")
-                .arg(state(result.evidenceReported &&
+                .arg(state(result.protocolOk &&
+                           result.evidenceReported &&
                            result.evidenceOk && localEvidenceOk))
                 .arg(result.evidenceAvailableFiles)
                 .arg(result.evidenceExpectedFiles)
@@ -559,8 +696,15 @@ void MainWindow::parseResults(const QString& log) {
                 .arg(result.measVolume, 0, 'f', 1);
     html += QStringLiteral("<tr><td>真实体积</td><td>%1 mm³</td></tr>")
                 .arg(result.gtVolume, 0, 'f', 1);
+    html += QStringLiteral("<tr><td>测量一致性</td><td>%1</td></tr>")
+                .arg(state(measurementOk));
     html += QStringLiteral("<tr><td>总耗时</td><td>%1 s</td></tr>")
                 .arg(result.totalTime, 0, 'f', 2);
+    if (!result.integrityErrors.isEmpty()) {
+        html += QStringLiteral(
+                    "<tr><td>审计原因</td><td style='color:#c62828'>%1</td></tr>")
+                    .arg(result.integrityErrors.first().toHtmlEscaped());
+    }
     html += QStringLiteral("</table>");
     m_resultView->setHtml(html);
 }
@@ -613,13 +757,51 @@ QString MainWindow::resolveEvidencePath(const QString& path) const {
     return QDir::cleanPath(pipelineDir.absoluteFilePath(path));
 }
 
-bool MainWindow::validateEvidenceFiles(QStringList& missingPaths) const {
+bool MainWindow::validateEvidenceFiles(QStringList& errors) const {
+    const int initialErrorCount = errors.size();
     const PipelineResult result = ResultParser::parse(m_fullLog);
-    if (!result.evidenceReported || !result.evidenceOk ||
+    if (!result.protocolOk || !result.evidenceReported || !result.evidenceOk ||
         result.imageDetails.isEmpty()) {
-        missingPaths.append(QStringLiteral("流水线未提供完整图像证据统计"));
+        errors.append(QStringLiteral("流水线证据协议未通过一致性校验"));
         return false;
     }
+
+    if (m_imageDetails.size() != result.imageDetails.size()) {
+        errors.append(QStringLiteral("界面收到的实时详情数与最终日志不一致"));
+        return false;
+    }
+    for (int index = 0; index < result.imageDetails.size(); ++index) {
+        const ImageDetailRecord& live = m_imageDetails.at(index);
+        const ImageDetailRecord& parsed = result.imageDetails.at(index);
+        if (live.category != parsed.category ||
+            live.index != parsed.index ||
+            live.sourcePath != parsed.sourcePath ||
+            live.processedPath != parsed.processedPath) {
+            errors.append(
+                QStringLiteral("实时显示记录与最终点检记录不一致：第 %1 条")
+                    .arg(index + 1));
+            return false;
+        }
+    }
+    if (!result.planReported ||
+        result.plannedCameraRecords != m_spinCamImages->value() ||
+        result.plannedLightPlaneRecords != m_spinLpImages->value() ||
+        result.plannedMotionAxisRecords != m_spinMaSteps->value()) {
+        errors.append(
+            QStringLiteral("点检计划中的标定图像数量与界面输入参数不一致"));
+        return false;
+    }
+
+    const QDir pipelineDir(QFileInfo(m_demoPath).absolutePath());
+    const QString outputPath =
+        pipelineDir.absoluteFilePath(QStringLiteral("output"));
+    const QFileInfo outputInfo(outputPath);
+    const QString outputRoot = outputInfo.canonicalFilePath().isEmpty()
+        ? outputInfo.absoluteFilePath()
+        : outputInfo.canonicalFilePath();
+    QHash<QString, QString> validationCache;
+    QHash<QString, qint64> plyVertexCounts;
+    int availableReferences = 0;
 
     for (const ImageDetailRecord& detail : result.imageDetails) {
         const QStringList paths = {
@@ -628,20 +810,112 @@ bool MainWindow::validateEvidenceFiles(QStringList& missingPaths) const {
         };
         for (const QString& path : paths) {
             const QFileInfo file(path);
-            bool readable =
-                file.exists() && file.isFile() && file.size() > 0;
-            if (readable &&
+            const QString canonicalPath = file.canonicalFilePath().isEmpty()
+                ? file.absoluteFilePath()
+                : file.canonicalFilePath();
+            QString validationError;
+            if (validationCache.contains(canonicalPath)) {
+                validationError = validationCache.value(canonicalPath);
+            } else if (!pathIsInside(canonicalPath, outputRoot)) {
+                validationError =
+                    QStringLiteral("证据文件不在本次 output 目录内");
+            } else if (!file.exists() || !file.isFile() || file.size() <= 0) {
+                validationError =
+                    QStringLiteral("证据文件不存在或为空");
+            } else if (
+                m_runStartedAt.isValid() &&
+                file.lastModified().toUTC() <
+                    m_runStartedAt.addSecs(-2)) {
+                validationError =
+                    QStringLiteral("证据文件早于本次点检启动时间");
+            } else if (
                 file.suffix().compare(
-                    QStringLiteral("ply"), Qt::CaseInsensitive) != 0) {
-                QImageReader reader(path);
-                readable = reader.canRead();
+                    QStringLiteral("ply"), Qt::CaseInsensitive) == 0) {
+                qint64 vertexCount = 0;
+                if (validateAsciiPlyFile(
+                        canonicalPath, validationError, vertexCount)) {
+                    plyVertexCounts.insert(canonicalPath, vertexCount);
+                }
+            } else {
+                QImageReader reader(canonicalPath);
+                if (!reader.canRead() || !reader.size().isValid()) {
+                    validationError =
+                        QStringLiteral("图像证据无法解码");
+                }
             }
-            if (!readable) {
-                missingPaths.append(path);
+            validationCache.insert(canonicalPath, validationError);
+
+            if (validationError.isEmpty()) {
+                ++availableReferences;
+            } else {
+                errors.append(
+                    QStringLiteral("%1：%2")
+                        .arg(validationError, canonicalPath));
             }
         }
     }
-    return missingPaths.isEmpty();
+
+    if (availableReferences != result.evidenceAvailableFiles ||
+        availableReferences != result.evidenceExpectedFiles) {
+        errors.append(
+            QStringLiteral(
+                "本地可读证据引用数 %1 与流水线声明 %2/%3 不一致")
+                .arg(availableReferences)
+                .arg(result.evidenceAvailableFiles)
+                .arg(result.evidenceExpectedFiles));
+    }
+    if (result.measurementTraceReported) {
+        const QFileInfo measurementSource(
+            resolveEvidencePath(result.measurementSourcePath));
+        const QString canonicalMeasurementSource =
+            measurementSource.canonicalFilePath().isEmpty()
+            ? measurementSource.absoluteFilePath()
+            : measurementSource.canonicalFilePath();
+        if (!plyVertexCounts.contains(canonicalMeasurementSource) ||
+            plyVertexCounts.value(canonicalMeasurementSource) !=
+                result.measurementSourcePoints) {
+            errors.append(
+                QStringLiteral(
+                    "测量输入点云顶点数与结构化测量追踪不一致"));
+        }
+    }
+    return errors.size() == initialErrorCount;
+}
+
+bool MainWindow::validateMeasurementResult(
+    const PipelineResult& result, QStringList& errors) const {
+    const int initialErrorCount = errors.size();
+    if (!result.measurementsReported) {
+        errors.append(QStringLiteral("流水线未提供完整测量结果"));
+        return false;
+    }
+
+    const double expectedStep1 = m_spinStep1H->value();
+    const double expectedStep2 = m_spinStep2H->value();
+    const double expectedGroundTruth =
+        m_spinBlockWidth->value() / 3.0 *
+        m_spinBlockDepth->value() *
+        (expectedStep1 + expectedStep2);
+    const double groundTruthTolerance =
+        std::max(1e-6, std::abs(expectedGroundTruth) * 1e-9);
+
+    if (std::abs(result.gtVolume - expectedGroundTruth) >
+        groundTruthTolerance) {
+        errors.append(
+            QStringLiteral("流水线真实体积与本次输入参数不一致"));
+    }
+    if (std::abs(result.step1Height - expectedStep1) > 5.0) {
+        errors.append(QStringLiteral("台阶 1 高度超出允许误差"));
+    }
+    if (std::abs(result.step2Height - expectedStep2) > 5.0) {
+        errors.append(QStringLiteral("台阶 2 高度超出允许误差"));
+    }
+    if (result.gtVolume <= 0.0 ||
+        std::abs(result.measVolume - result.gtVolume) /
+                result.gtVolume > 0.5) {
+        errors.append(QStringLiteral("测量体积误差超过 50%"));
+    }
+    return errors.size() == initialErrorCount;
 }
 
 void MainWindow::displayImageDetail(int index) {
